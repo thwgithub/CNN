@@ -3,6 +3,7 @@ import torch
 import torch.nn as nn
 import torch.backends.cudnn as cudnn
 import random
+import torch.nn.init as init
 
 ###############################random seed##############################################################################
 manualSeed = random.randint(1, 10000) # fix seed
@@ -113,7 +114,7 @@ def _dict_to_tensor(x, k1, k2):
                             for i in range(k1)])
 
 #generating a random 2D orthogonal Convolution kernel
-def _orthogonal_kernel(ksize, cin, cout):
+def _orthogonal_kernel(tensor):
     """Construct orthogonal kernel for convolution.
     Args:
       ksize: Kernel size.
@@ -124,6 +125,9 @@ def _orthogonal_kernel(ksize, cin, cout):
     Raises:
       ValueError: If cin > cout.
     """
+    ksize = tensor.shape[2]
+    cin = tensor.shape[1]
+    cout = tensor.shape[0]
     if cin > cout:
         raise ValueError("The number of input channels cannot exceed "
                          "the number of output channels.")
@@ -140,17 +144,51 @@ def _orthogonal_kernel(ksize, cin, cout):
     for i in range(ksize):
         for j in range(ksize):
             p[i, j] = torch.mm(orth, p[i, j])
+    tensor.copy_(_dict_to_tensor(p, ksize, ksize).permute(3,2,1,0))
+    return tensor
 
-    return _dict_to_tensor(p, ksize, ksize).permute(3,2,1,0)
+#defining 2DConvT orthogonal initialization kernel
+def ConvT_orth_kernel2D(tensor):
+    ksize = tensor.shape[2]
+    cin = tensor.shape[0]
+    cout = tensor.shape[1]
+    if cin > cout:
+        raise ValueError("The number of input channels cannot exceed "
+                         "the number of output channels.")
+    orth = _orthogonal_matrix(cout)[0:cin, :]  # 这就是算法1中的H
+    if ksize == 1:
+        return torch.unsqueeze(torch.unsqueeze(orth, 0), 0)
 
+    p = _block_orth(_symmetric_projection(cout),
+                    _symmetric_projection(cout))
+    for _ in range(ksize - 2):
+        temp = _block_orth(_symmetric_projection(cout),
+                           _symmetric_projection(cout))
+        p = _matrix_conv(p, temp)
+    for i in range(ksize):
+        for j in range(ksize):
+            p[i, j] = torch.mm(orth, p[i, j])
+    tensor.copy_(_dict_to_tensor(p, ksize, ksize).permute(2, 3, 1, 0))
+    return tensor
 #Call method
-def Conv2d_weights_orth_init(net, kernel_size=3, in_channels=3, out_channels=64):
+def weights_init(net):
     for m in net.modules():
         if isinstance(m, nn.Conv2d):
-            m.weight.data=_orthogonal_kernel(kernel_size,in_channels,out_channels)
-            m.bias.data.zero_()
+            if m.weight.shape[0] > m.weight.shape[1]:
+                _orthogonal_kernel(m.weight.data)
+                m.bias.data.zero_()
+            else:
+                init.orthogonal(m.weight.data)
+                m.bias.data.zero_()
+
         elif isinstance(m, nn.ConvTranspose2d):
-            m.weight.data.normal_(0, 0.02)
+            if m.weight.shape[1] > m.weight.shape[0]:
+                ConvT_orth_kernel2D(m.weight.data)
+               # m.bias.data.zero_()
+            else:
+                init.orthogonal(m.weight.data)
+               # m.bias.data.zero_()
+
            # m.bias.data.zero_()
         elif isinstance(m, nn.Linear):
             m.weight.data.normal_(0, 0.02)
@@ -158,6 +196,10 @@ def Conv2d_weights_orth_init(net, kernel_size=3, in_channels=3, out_channels=64)
         elif isinstance(m, nn.BatchNorm2d):
             m.weight.data.normal_(1.0, 0.02)
             m.bias.data.zero_()
+'''
+Algorithm requires The number of input channels cannot exceed the number of output channels.
+ However, some questions may be in_channels>out_channels. 
+ For example, the final dense layer in GAN. If counters this case, Orthogonal_kernel is replaced by the common orthogonal init'''
 '''
 for example,
 net=nn.Conv2d(3,64,3,2,1)
@@ -179,6 +221,9 @@ def makeDeltaOrthogonal(in_channels=3, out_channels=64, kernel_size=3, gain=torc
     return weights
 #Calling method is the same as the above _orthogonal_kernel
 ######################################################END###############################################################
+
+
+
 
 
 
